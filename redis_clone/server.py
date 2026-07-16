@@ -24,6 +24,7 @@ class Server:
         self._parser = Parser()
         self._response = ResponseBuilder()
         self._server_socket: socket.socket = self._create_socket()
+        self.data_store: dict[str, str] = {}
 
     def _create_socket(self) -> socket.socket:
        
@@ -113,6 +114,18 @@ class Server:
                     "wrong number of arguments for 'echo' command", kind="ERR"
                 )
             return self._response.bulk_string(args[0])
+
+        if command == "SET":
+            if len(args) < 2:
+                return self._response.error("wrong number of arguments for 'set' command", kind="ERR")
+            self.data_store[args[0]] = args[1]
+            return self._response.simple_string("OK")
+
+        if command == "GET":
+            if not args:
+                return self._response.error("wrong number of arguments for 'get' command", kind="ERR")
+            value = self.data_store.get(args[0])
+            return self._response._build_protocol_2_bulk_string(value)
 
         return self._response.error(
             f"unknown command '{command}'", kind="ERR"

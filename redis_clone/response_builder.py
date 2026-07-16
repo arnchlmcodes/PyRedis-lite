@@ -32,6 +32,13 @@ class ResponseBuilder:
     def null_bulk_string(self) -> bytes:
         return f"$-1{CRLF}".encode("utf-8")
 
+    def _build_protocol_2_bulk_string(self, value: str | None) -> bytes:
+        if value is None:
+            return f"$-1{CRLF}".encode("utf-8")
+        payload = value.encode("utf-8")
+        return f"${len(payload)}{CRLF}".encode("utf-8") + payload + CRLF.encode("utf-8")
+
+
  #
 
     def array(self, elements: list[bytes] | None) -> bytes:
