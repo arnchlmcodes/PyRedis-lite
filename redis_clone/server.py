@@ -25,6 +25,7 @@ class Server:
         self._response = ResponseBuilder()
         self._server_socket: socket.socket = self._create_socket()
         self.data_store: dict[str, str] = {}
+        self.running: bool = False
 
     def _create_socket(self) -> socket.socket:
        
@@ -43,26 +44,31 @@ class Server:
         logger.info("Listening … (backlog=%d)", backlog)
 
     def _accept_connections(self) -> None:
-
         logger.info("Ready to accept connections on %s:%d", self.host, self.port)
-        while True:
+        while self.running:
             try:
                 client_socket, client_address = self._server_socket.accept()
-            except KeyboardInterrupt:
-                logger.info("Server shutting down (KeyboardInterrupt).")
+            except OSError:
                 break
             logger.info("New connection from %s:%d", *client_address)
             self._handle_connection(client_socket, client_address)
 
+    def stop(self) -> None:
+        self.running = False
+        try:
+            self._server_socket.close()
+        except OSError:
+            pass
+
 
     def run(self) -> None:
-
+        self.running = True
         try:
             self._bind_socket()
             self._listen()
             self._accept_connections()
         finally:
-            self._server_socket.close()
+            self.running = False
             logger.info("Server socket closed.")
 
 
