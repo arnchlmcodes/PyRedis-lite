@@ -5,9 +5,9 @@ services:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 2s
       timeout: 3s
-      retries: 5
+      retries: 10
 
   tests:
     build:
@@ -19,4 +19,4 @@ services:
     environment:
       - REDIS_HOST=redis-server
       - REDIS_PORT=6379
-    command: ["pytest", "tests/", "-v", "--tb=short"]
+    command: ["pytest", "tests/", "-vvv", "--tb=short"]
