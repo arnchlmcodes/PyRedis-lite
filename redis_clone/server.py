@@ -1,3 +1,4 @@
+import os
 import socket
 import logging
 
@@ -12,8 +13,8 @@ logging.basicConfig(
 logger = logging.getLogger("pyredis-lite")
 
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 6379
+DEFAULT_HOST = os.environ.get("REDIS_HOST", "0.0.0.0")
+DEFAULT_PORT = int(os.environ.get("REDIS_PORT", 6379))
 BUFFER_SIZE = 1024
 
 

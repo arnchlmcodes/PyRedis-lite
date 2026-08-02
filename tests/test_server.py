@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 import pytest
@@ -5,8 +6,8 @@ import redis
 
 from redis_clone.server import Server
 
-TEST_HOST = "127.0.0.1"
-TEST_PORT = 6380
+TEST_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
+TEST_PORT = int(os.environ.get("REDIS_PORT", 6380))
 
 
 @pytest.fixture(scope="module")

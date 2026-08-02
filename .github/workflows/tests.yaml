@@ -25,8 +25,7 @@ jobs:
         run: docker compose build --pull --no-cache
 
       - name: Debug – inspect working directory inside container
-        run: |
-          docker compose run --rm --entrypoint="" tests sh -c "pwd && ls -la"
+        run: docker compose run --rm --entrypoint sh tests -c "pwd && ls -la"
 
       - name: Run tests
         run: docker compose up --exit-code-from tests --abort-on-container-exit tests
