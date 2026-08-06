@@ -1,6 +1,6 @@
-import os
-import socket
+import asyncio
 import logging
+import os
 
 from redis_clone.command_handler import CommandHandler
 from redis_clone.database import Database
@@ -21,6 +21,8 @@ BUFFER_SIZE = 1024
 
 
 class Server:
+    """Asyncio TCP server speaking RESP2."""
+
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         self.host = host
         self.port = port
@@ -28,82 +30,88 @@ class Server:
         self._response = ResponseBuilder()
         self._db = Database()
         self._handler = CommandHandler(self._db, self._response)
-        self._server_socket: socket.socket = self._create_socket()
-        self.running: bool = False
+        # Set by _serve(); used by stop() for cross-thread shutdown.
+        self._asyncio_server: asyncio.Server | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
-    def _create_socket(self) -> socket.socket:
-       
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        logger.debug("Server socket created.")
-        return sock
-
-    def _bind_socket(self) -> None:
-        self._server_socket.bind((self.host, self.port))
-        logger.info("Socket bound to %s:%d", self.host, self.port)
-
-    def _listen(self, backlog: int = 5) -> None:
-   
-        self._server_socket.listen(backlog)
-        logger.info("Listening … (backlog=%d)", backlog)
-
-    def _accept_connections(self) -> None:
-        logger.info("Ready to accept connections on %s:%d", self.host, self.port)
-        while self.running:
-            try:
-                client_socket, client_address = self._server_socket.accept()
-            except OSError:
-                break
-            logger.info("New connection from %s:%d", *client_address)
-            self._handle_connection(client_socket, client_address)
-
-    def stop(self) -> None:
-        self.running = False
-        try:
-            self._server_socket.close()
-        except OSError:
-            pass
-
+    # ------------------------------------------------------------------
+    # Public interface (unchanged from the blocking implementation)
+    # ------------------------------------------------------------------
 
     def run(self) -> None:
-        self.running = True
+        """Start the event loop and block until stop() is called."""
         try:
-            self._bind_socket()
-            self._listen()
-            self._accept_connections()
-        finally:
-            self.running = False
-            logger.info("Server socket closed.")
+            asyncio.run(self._serve())
+        except asyncio.CancelledError:
+            pass  # Normal shutdown path: stop() cancelled serve_forever()
 
+    def stop(self) -> None:
+        """
+        Signal the server to shut down.
 
-    def _handle_connection(
+        Safe to call from any thread (e.g. test teardown running in the
+        main thread while the event loop lives in a daemon thread).
+        """
+        if self._asyncio_server is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(self._asyncio_server.close)
+
+    # ------------------------------------------------------------------
+    # Internal asyncio machinery
+    # ------------------------------------------------------------------
+
+    async def _serve(self) -> None:
+        """Bind, listen, and serve connections until the server is closed."""
+        self._loop = asyncio.get_running_loop()
+        self._asyncio_server = await asyncio.start_server(
+            self._handle_client,
+            self.host,
+            self.port,
+            reuse_address=True,
+        )
+        addrs = ", ".join(
+            str(sock.getsockname()) for sock in self._asyncio_server.sockets
+        )
+        logger.info("Listening on %s", addrs)
+
+        async with self._asyncio_server:
+            await self._asyncio_server.serve_forever()
+
+        logger.info("Server stopped.")
+
+    async def _handle_client(
         self,
-        client_socket: socket.socket,
-        client_address: tuple[str, int],
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
     ) -> None:
+        """Coroutine spawned for every accepted connection."""
+        addr = writer.get_extra_info("peername")
+        logger.info("New connection from %s:%d", *addr)
 
-        with client_socket:
+        try:
             while True:
                 try:
-                    data = client_socket.recv(BUFFER_SIZE)
+                    data = await reader.read(BUFFER_SIZE)
                 except ConnectionResetError:
-                    logger.warning(
-                        "Connection reset by %s:%d", *client_address
-                    )
+                    logger.warning("Connection reset by %s:%d", *addr)
                     break
 
                 if not data:
-                    logger.info(
-                        "Connection closed by %s:%d", *client_address
-                    )
+                    logger.info("Connection closed by %s:%d", *addr)
                     break
 
-                logger.debug("Received %d bytes from %s:%d", len(data), *client_address)
-
+                logger.debug("Received %d bytes from %s:%d", len(data), *addr)
                 response = self._process_command(data)
-                client_socket.sendall(response)
+                writer.write(response)
+                await writer.drain()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _process_command(self, data: bytes) -> bytes:
+        """Parse raw bytes and delegate to the command handler."""
         try:
             command, args = self._parser.parse(data)
         except Exception as exc:  # noqa: BLE001
@@ -113,6 +121,11 @@ class Server:
         return self._handler.handle(command, args)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for the ``pyredis-lite`` console script."""
     server = Server()
     server.run()
+
+
+if __name__ == "__main__":
+    main()
