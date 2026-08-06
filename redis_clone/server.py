@@ -2,6 +2,8 @@ import os
 import socket
 import logging
 
+from redis_clone.command_handler import CommandHandler
+from redis_clone.database import Database
 from redis_clone.redis_parser import Parser
 from redis_clone.response_builder import ResponseBuilder
 
@@ -24,8 +26,9 @@ class Server:
         self.port = port
         self._parser = Parser()
         self._response = ResponseBuilder()
+        self._db = Database()
+        self._handler = CommandHandler(self._db, self._response)
         self._server_socket: socket.socket = self._create_socket()
-        self.data_store: dict[str, str] = {}
         self.running: bool = False
 
     def _create_socket(self) -> socket.socket:
@@ -101,42 +104,13 @@ class Server:
                 client_socket.sendall(response)
 
     def _process_command(self, data: bytes) -> bytes:
-
         try:
             command, args = self._parser.parse(data)
         except Exception as exc:  # noqa: BLE001
             logger.error("Parse error: %s", exc)
             return self._response.error(f"Parse error: {exc}", kind="ERR")
 
-        logger.debug("Command=%r args=%r", command, args)
-
-        if command == "PING":
-            if args:
-                return self._response.bulk_string(args[0])
-            return self._response.simple_string("PONG")
-
-        if command == "ECHO":
-            if not args:
-                return self._response.error(
-                    "wrong number of arguments for 'echo' command", kind="ERR"
-                )
-            return self._response.bulk_string(args[0])
-
-        if command == "SET":
-            if len(args) < 2:
-                return self._response.error("wrong number of arguments for 'set' command", kind="ERR")
-            self.data_store[args[0]] = args[1]
-            return self._response.simple_string("OK")
-
-        if command == "GET":
-            if not args:
-                return self._response.error("wrong number of arguments for 'get' command", kind="ERR")
-            value = self.data_store.get(args[0])
-            return self._response._build_protocol_2_bulk_string(value)
-
-        return self._response.error(
-            f"unknown command '{command}'", kind="ERR"
-        )
+        return self._handler.handle(command, args)
 
 
 if __name__ == "__main__":
