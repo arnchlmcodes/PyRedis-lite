@@ -168,3 +168,170 @@ class TestDatabaseTTL:
 
             mock_time.time.return_value = 1501.0
             assert self.db.get("k") is None
+
+
+# ------------------------------------------------------------------
+# NX / XX / GET flag tests
+# ------------------------------------------------------------------
+
+
+class TestDatabaseNXXXGET:
+    """Tests for SET NX, XX, and GET flags."""
+
+    def setup_method(self):
+        self.db = Database()
+
+    # -- NX (only set if key does NOT exist) -----------------------
+
+    def test_nx_sets_when_key_missing(self):
+        result = self.db.set("k", "v", nx=True)
+        assert result is None  # success, no GET
+        assert self.db.get("k") == "v"
+
+    def test_nx_rejected_when_key_exists(self):
+        self.db.set("k", "old")
+        result = self.db.set("k", "new", nx=True)
+        assert result is Database._NOT_SET
+        # Value unchanged
+        assert self.db.get("k") == "old"
+
+    def test_nx_with_ex_sets_ttl_on_success(self):
+        """NX + EX should compose: set both value and TTL."""
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            result = self.db.set("k", "v", nx=True, ex=10)
+            assert result is None  # success
+
+            mock_time.time.return_value = 1009.0
+            assert self.db.get("k") == "v"
+
+            mock_time.time.return_value = 1011.0
+            assert self.db.get("k") is None
+
+    def test_nx_treats_expired_key_as_missing(self):
+        """An expired key should be treated as non-existent for NX."""
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            self.db.set("k", "old", ex=1)
+
+            mock_time.time.return_value = 1002.0
+            result = self.db.set("k", "new", nx=True)
+            assert result is None  # success – expired key doesn't block
+            assert self.db.get("k") == "new"
+
+    # -- XX (only set if key DOES exist) ---------------------------
+
+    def test_xx_sets_when_key_exists(self):
+        self.db.set("k", "old")
+        result = self.db.set("k", "new", xx=True)
+        assert result is None
+        assert self.db.get("k") == "new"
+
+    def test_xx_rejected_when_key_missing(self):
+        result = self.db.set("k", "v", xx=True)
+        assert result is Database._NOT_SET
+        assert self.db.get("k") is None
+
+    def test_xx_with_ex_sets_new_ttl(self):
+        """XX + EX should update the value *and* set a new TTL."""
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            self.db.set("k", "old")  # no TTL
+
+            self.db.set("k", "new", xx=True, ex=5)
+
+            mock_time.time.return_value = 1004.0
+            assert self.db.get("k") == "new"
+
+            mock_time.time.return_value = 1006.0
+            assert self.db.get("k") is None
+
+    # -- GET (return old value) ------------------------------------
+
+    def test_get_flag_returns_old_value(self):
+        self.db.set("k", "old")
+        result = self.db.set("k", "new", get=True)
+        assert result == "old"
+        assert self.db.get("k") == "new"
+
+    def test_get_flag_returns_none_when_no_old_value(self):
+        result = self.db.set("k", "v", get=True)
+        assert result is None
+        assert self.db.get("k") == "v"
+
+    def test_nx_with_get_returns_old_on_rejection(self):
+        """SET k v NX GET when key exists → returns old value, no write."""
+        self.db.set("k", "old")
+        result = self.db.set("k", "new", nx=True, get=True)
+        assert result == "old"
+        assert self.db.get("k") == "old"  # unchanged
+
+    def test_nx_with_get_returns_none_on_success(self):
+        """SET k v NX GET when key missing → returns None, writes."""
+        result = self.db.set("k", "v", nx=True, get=True)
+        assert result is None
+        assert self.db.get("k") == "v"
+
+    def test_xx_with_get_returns_old_on_success(self):
+        """SET k v XX GET when key exists → returns old value, writes."""
+        self.db.set("k", "old")
+        result = self.db.set("k", "new", xx=True, get=True)
+        assert result == "old"
+        assert self.db.get("k") == "new"
+
+    def test_xx_with_get_returns_none_on_rejection(self):
+        """SET k v XX GET when key missing → returns None, no write."""
+        result = self.db.set("k", "v", xx=True, get=True)
+        assert result is None
+        assert self.db.get("k") is None
+
+
+# ------------------------------------------------------------------
+# DEL command tests
+# ------------------------------------------------------------------
+
+
+class TestDatabaseDEL:
+    """Tests for the Database.delete() method."""
+
+    def setup_method(self):
+        self.db = Database()
+
+    def test_del_single_existing_key(self):
+        self.db.set("k", "v")
+        assert self.db.delete("k") == 1
+        assert self.db.get("k") is None
+
+    def test_del_nonexistent_key_returns_zero(self):
+        assert self.db.delete("ghost") == 0
+
+    def test_del_multiple_keys(self):
+        self.db.set("a", "1")
+        self.db.set("b", "2")
+        self.db.set("c", "3")
+        assert self.db.delete("a", "b", "c") == 3
+        assert self.db.get("a") is None
+        assert self.db.get("b") is None
+        assert self.db.get("c") is None
+
+    def test_del_mix_of_existing_and_missing(self):
+        self.db.set("a", "1")
+        self.db.set("c", "3")
+        assert self.db.delete("a", "b", "c") == 2
+
+    def test_del_clears_ttl(self):
+        """DEL should also remove the expiry metadata."""
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            self.db.set("k", "v", ex=100)
+            self.db.delete("k")
+            assert "k" not in self.db._expiry
+
+    def test_del_does_not_count_expired_key(self):
+        """An already-expired key should not be counted as deleted."""
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            self.db.set("k", "v", ex=1)
+
+            mock_time.time.return_value = 1002.0
+            assert self.db.delete("k") == 0

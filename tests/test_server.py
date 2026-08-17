@@ -72,3 +72,30 @@ def test_concurrent_clients(redis_server):
         t.join(timeout=5)
 
     assert not errors, f"Errors in concurrent clients: {errors}"
+
+
+def test_server_set_options(client):
+    # NX
+    assert client.set("k_nx", "v1", nx=True) is True
+    assert client.set("k_nx", "v2", nx=True) is None
+
+    # XX
+    assert client.set("k_xx_missing", "v1", xx=True) is None
+    client.set("k_xx", "v1")
+    assert client.set("k_xx", "v2", xx=True) is True
+    assert client.get("k_xx") == "v2"
+
+    # GET
+    assert client.set("k_get", "v_new", get=True) is None
+    client.set("k_get_prev", "old_val")
+    assert client.set("k_get_prev", "new_val", get=True) == "old_val"
+    assert client.get("k_get_prev") == "new_val"
+
+
+def test_server_del(client):
+    client.set("d1", "1")
+    client.set("d2", "2")
+    assert client.delete("d1", "d2", "d3") == 2
+    assert client.get("d1") is None
+    assert client.get("d2") is None
+

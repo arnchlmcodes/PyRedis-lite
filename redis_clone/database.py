@@ -42,6 +42,10 @@ class Database:
     # Public API
     # ------------------------------------------------------------------
 
+    # Sentinel used to distinguish "SET was rejected by NX/XX" from
+    # "SET succeeded and there was no old value (None)".
+    _NOT_SET: object = object()
+
     def set(
         self,
         key: str,
@@ -52,8 +56,16 @@ class Database:
         exat: int | float | None = None,
         pxat: int | float | None = None,
         keepttl: bool = False,
-    ) -> None:
-        """Persist *value* under *key*, overwriting any previous entry.
+        nx: bool = False,
+        xx: bool = False,
+        get: bool = False,
+    ) -> str | None | object:
+        """Persist *value* under *key*, with optional conditions and TTL.
+
+        Condition flags:
+        * *nx*  – only set if the key does **not** already exist.
+        * *xx*  – only set if the key **does** already exist.
+        * *get* – return the old value (or ``None``) regardless of outcome.
 
         TTL options (mutually exclusive – first match wins):
         * *ex*   – expire in *ex* seconds (relative).
@@ -63,7 +75,28 @@ class Database:
         * *keepttl* – preserve the existing TTL if one was set.
 
         When none of the above are given, any prior TTL on *key* is cleared.
+
+        Returns:
+        * When *get* is ``True``: the previous value (``str`` or ``None``).
+        * When NX/XX condition fails and *get* is ``False``:
+          the ``Database._NOT_SET`` sentinel.
+        * Otherwise: ``None`` (success, no GET).
         """
+        # Lazy-evict before evaluating conditions so that an expired key
+        # is treated as non-existent.
+        self._evict_if_expired(key)
+
+        key_exists = key in self._store
+        old_value: str | None = self._store.get(key)
+
+        # NX / XX guards
+        if nx and key_exists:
+            return old_value if get else Database._NOT_SET
+        if xx and not key_exists:
+            return old_value if get else Database._NOT_SET
+
+        # --- perform the write ---
+
         # Determine the new absolute expiry, if any.
         new_expiry: float | None = None
         if ex is not None:
@@ -91,6 +124,8 @@ class Database:
             # No TTL option and no KEEPTTL → clear any previous TTL.
             self._expiry.pop(key, None)
 
+        return old_value if get else None
+
     def get(self, key: str) -> str | None:
         """Return the value for *key*, or ``None`` if the key does not exist
         or has expired (lazy eviction).
@@ -98,3 +133,22 @@ class Database:
         if self._evict_if_expired(key):
             return None
         return self._store.get(key)
+
+    def exists(self, key: str) -> bool:
+        """Return ``True`` if *key* exists and has not expired."""
+        self._evict_if_expired(key)
+        return key in self._store
+
+    def delete(self, *keys: str) -> int:
+        """Remove *keys* from the store. Return the number of keys that
+        were actually present (and thus removed).
+        """
+        count = 0
+        for key in keys:
+            # Don't count already-expired keys as "deleted".
+            self._evict_if_expired(key)
+            if key in self._store:
+                del self._store[key]
+                self._expiry.pop(key, None)
+                count += 1
+        return count

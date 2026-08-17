@@ -98,3 +98,108 @@ class TestSetThenGet:
         handler.handle("SET", ["k", "v2"])
         result = handler.handle("GET", ["k"])
         assert result == b"$2\r\nv2\r\n"
+
+
+class TestSetOptions:
+    def test_set_nx_on_missing_key_returns_ok(self, handler_with_db):
+        handler, db = handler_with_db
+        result = handler.handle("SET", ["k", "v", "NX"])
+        assert result == b"+OK\r\n"
+        assert db.get("k") == "v"
+
+    def test_set_nx_on_existing_key_returns_nil(self, handler_with_db):
+        handler, db = handler_with_db
+        handler.handle("SET", ["k", "v1"])
+        result = handler.handle("SET", ["k", "v2", "NX"])
+        assert result == b"$-1\r\n"
+        assert db.get("k") == "v1"
+
+    def test_set_xx_on_missing_key_returns_nil(self, handler_with_db):
+        handler, db = handler_with_db
+        result = handler.handle("SET", ["k", "v", "XX"])
+        assert result == b"$-1\r\n"
+        assert db.get("k") is None
+
+    def test_set_xx_on_existing_key_returns_ok(self, handler_with_db):
+        handler, db = handler_with_db
+        handler.handle("SET", ["k", "v1"])
+        result = handler.handle("SET", ["k", "v2", "XX"])
+        assert result == b"+OK\r\n"
+        assert db.get("k") == "v2"
+
+    def test_set_get_flag_returns_old_value(self, handler_with_db):
+        handler, db = handler_with_db
+        handler.handle("SET", ["k", "old"])
+        result = handler.handle("SET", ["k", "new", "GET"])
+        assert result == b"$3\r\nold\r\n"
+        assert db.get("k") == "new"
+
+    def test_set_get_flag_on_missing_key_returns_nil(self, handler_with_db):
+        handler, db = handler_with_db
+        result = handler.handle("SET", ["k", "new", "GET"])
+        assert result == b"$-1\r\n"
+        assert db.get("k") == "new"
+
+    def test_set_nx_get_when_exists(self, handler_with_db):
+        handler, db = handler_with_db
+        handler.handle("SET", ["k", "old"])
+        result = handler.handle("SET", ["k", "new", "NX", "GET"])
+        assert result == b"$3\r\nold\r\n"
+        assert db.get("k") == "old"
+
+    def test_set_xx_get_when_missing(self, handler_with_db):
+        handler, db = handler_with_db
+        result = handler.handle("SET", ["k", "new", "XX", "GET"])
+        assert result == b"$-1\r\n"
+        assert db.get("k") is None
+
+    def test_set_nx_ex_composition(self, handler_with_db):
+        handler, db = handler_with_db
+        result = handler.handle("SET", ["k", "v", "NX", "EX", "10"])
+        assert result == b"+OK\r\n"
+        assert db.get("k") == "v"
+
+    def test_set_invalid_option_syntax_error(self, handler):
+        result = handler.handle("SET", ["k", "v", "INVALID"])
+        assert result.startswith(b"-ERR")
+        assert b"syntax error" in result.lower()
+
+    def test_set_ex_missing_value_syntax_error(self, handler):
+        result = handler.handle("SET", ["k", "v", "EX"])
+        assert result.startswith(b"-ERR")
+        assert b"syntax error" in result.lower()
+
+    def test_set_ex_non_integer_value_error(self, handler):
+        result = handler.handle("SET", ["k", "v", "EX", "not_a_number"])
+        assert result.startswith(b"-ERR")
+        assert b"not an integer" in result.lower()
+
+
+class TestDel:
+    def test_del_no_args_returns_error(self, handler):
+        result = handler.handle("DEL", [])
+        assert result.startswith(b"-ERR")
+        assert b"del" in result.lower()
+
+    def test_del_single_existing_key(self, handler_with_db):
+        handler, db = handler_with_db
+        handler.handle("SET", ["k", "v"])
+        result = handler.handle("DEL", ["k"])
+        assert result == b":1\r\n"
+        assert db.get("k") is None
+
+    def test_del_nonexistent_key(self, handler):
+        result = handler.handle("DEL", ["nonexistent"])
+        assert result == b":0\r\n"
+
+    def test_del_multiple_keys(self, handler_with_db):
+        handler, db = handler_with_db
+        handler.handle("SET", ["k1", "v1"])
+        handler.handle("SET", ["k2", "v2"])
+        handler.handle("SET", ["k3", "v3"])
+        result = handler.handle("DEL", ["k1", "k2", "k4"])
+        assert result == b":2\r\n"
+        assert db.get("k1") is None
+        assert db.get("k2") is None
+        assert db.get("k3") == "v3"
+

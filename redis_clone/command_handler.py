@@ -25,7 +25,7 @@ class CommandHandler:
         """
         Dispatch *command* with *args* and return a RESP-encoded response.
 
-        Supported commands: PING, ECHO, SET, GET.
+        Supported commands: PING, ECHO, SET, GET, DEL.
         Unknown commands produce an ERR error response.
         """
         logger.debug("Command=%r args=%r", command, args)
@@ -69,11 +69,29 @@ class CommandHandler:
                 elif opt == "KEEPTTL":
                     kwargs["keepttl"] = True
                     i += 1
+                elif opt == "NX":
+                    kwargs["nx"] = True
+                    i += 1
+                elif opt == "XX":
+                    kwargs["xx"] = True
+                    i += 1
+                elif opt == "GET":
+                    kwargs["get"] = True
+                    i += 1
                 else:
                     return self._response.error(
                         "syntax error", kind="ERR"
                     )
-            self._db.set(key, value, **kwargs)
+
+            result = self._db.set(key, value, **kwargs)
+
+            use_get = kwargs.get("get", False)
+            if use_get:
+                # GET flag: always return the old value (str or None).
+                return self._response.bulk_string(result)  # type: ignore[arg-type]
+            # Without GET: _NOT_SET means NX/XX rejected the write.
+            if result is Database._NOT_SET:
+                return self._response.bulk_string(None)
             return self._response.simple_string("OK")
 
         if command == "GET":
@@ -84,4 +102,13 @@ class CommandHandler:
             value = self._db.get(args[0])
             return self._response.bulk_string(value)
 
+        if command == "DEL":
+            if not args:
+                return self._response.error(
+                    "wrong number of arguments for 'del' command", kind="ERR"
+                )
+            count = self._db.delete(*args)
+            return self._response.integer(count)
+
         return self._response.error(f"unknown command '{command}'", kind="ERR")
+
