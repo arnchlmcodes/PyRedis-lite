@@ -47,7 +47,33 @@ class CommandHandler:
                 return self._response.error(
                     "wrong number of arguments for 'set' command", kind="ERR"
                 )
-            self._db.set(args[0], args[1])
+            key, value = args[0], args[1]
+            options = args[2:]
+            kwargs: dict[str, int | bool] = {}
+            i = 0
+            while i < len(options):
+                opt = options[i].upper()
+                if opt in ("EX", "PX", "EXAT", "PXAT"):
+                    if i + 1 >= len(options):
+                        return self._response.error(
+                            "syntax error", kind="ERR"
+                        )
+                    try:
+                        kwargs[opt.lower()] = int(options[i + 1])
+                    except ValueError:
+                        return self._response.error(
+                            "value is not an integer or out of range",
+                            kind="ERR",
+                        )
+                    i += 2
+                elif opt == "KEEPTTL":
+                    kwargs["keepttl"] = True
+                    i += 1
+                else:
+                    return self._response.error(
+                        "syntax error", kind="ERR"
+                    )
+            self._db.set(key, value, **kwargs)
             return self._response.simple_string("OK")
 
         if command == "GET":
