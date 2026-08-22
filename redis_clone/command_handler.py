@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from redis_clone.database import Database
+from redis_clone.database import Database, WrongTypeError
 from redis_clone.response_builder import ResponseBuilder
 
 logger = logging.getLogger("pyredis-lite.command_handler")
@@ -25,11 +25,17 @@ class CommandHandler:
         """
         Dispatch *command* with *args* and return a RESP-encoded response.
 
-        Supported commands: PING, ECHO, SET, GET, DEL.
+        Supported commands: PING, ECHO, SET, GET, DEL, LPUSH, RPUSH, LRANGE, LLEN, LPOP, RPOP.
         Unknown commands produce an ERR error response.
         """
         logger.debug("Command=%r args=%r", command, args)
 
+        try:
+            return self._dispatch(command, args)
+        except WrongTypeError:
+            return self._response.wrong_type()
+
+    def _dispatch(self, command: str, args: list[str]) -> bytes:
         if command == "PING":
             if args:
                 return self._response.bulk_string(args[0])
@@ -110,5 +116,95 @@ class CommandHandler:
             count = self._db.delete(*args)
             return self._response.integer(count)
 
-        return self._response.error(f"unknown command '{command}'", kind="ERR")
+        if command == "LPUSH":
+            if len(args) < 2:
+                return self._response.error(
+                    "wrong number of arguments for 'lpush' command", kind="ERR"
+                )
+            count = self._db.lpush(args[0], *args[1:])
+            return self._response.integer(count)
 
+        if command == "RPUSH":
+            if len(args) < 2:
+                return self._response.error(
+                    "wrong number of arguments for 'rpush' command", kind="ERR"
+                )
+            count = self._db.rpush(args[0], *args[1:])
+            return self._response.integer(count)
+
+        if command == "LRANGE":
+            if len(args) != 3:
+                return self._response.error(
+                    "wrong number of arguments for 'lrange' command", kind="ERR"
+                )
+            try:
+                start = int(args[1])
+                stop = int(args[2])
+            except ValueError:
+                return self._response.error(
+                    "value is not an integer or out of range", kind="ERR"
+                )
+            items = self._db.lrange(args[0], start, stop)
+            return self._response.array(
+                [self._response.bulk_string(item) for item in items]
+            )
+
+        if command == "LLEN":
+            if len(args) != 1:
+                return self._response.error(
+                    "wrong number of arguments for 'llen' command", kind="ERR"
+                )
+            length = self._db.llen(args[0])
+            return self._response.integer(length)
+
+        if command == "LPOP":
+            if len(args) < 1 or len(args) > 2:
+                return self._response.error(
+                    "wrong number of arguments for 'lpop' command", kind="ERR"
+                )
+            if len(args) == 1:
+                val = self._db.lpop(args[0])
+                return self._response.bulk_string(val)  # type: ignore[arg-type]
+            try:
+                count = int(args[1])
+            except ValueError:
+                return self._response.error(
+                    "value is not an integer or out of range", kind="ERR"
+                )
+            if count < 0:
+                return self._response.error(
+                    "value is out of range, must be positive", kind="ERR"
+                )
+            vals = self._db.lpop(args[0], count=count)
+            if vals is None:
+                return self._response.null_bulk_string()
+            return self._response.array(
+                [self._response.bulk_string(item) for item in vals]  # type: ignore[union-attr]
+            )
+
+        if command == "RPOP":
+            if len(args) < 1 or len(args) > 2:
+                return self._response.error(
+                    "wrong number of arguments for 'rpop' command", kind="ERR"
+                )
+            if len(args) == 1:
+                val = self._db.rpop(args[0])
+                return self._response.bulk_string(val)  # type: ignore[arg-type]
+            try:
+                count = int(args[1])
+            except ValueError:
+                return self._response.error(
+                    "value is not an integer or out of range", kind="ERR"
+                )
+            if count < 0:
+                return self._response.error(
+                    "value is out of range, must be positive", kind="ERR"
+                )
+            vals = self._db.rpop(args[0], count=count)
+            if vals is None:
+                return self._response.null_bulk_string()
+            return self._response.array(
+                [self._response.bulk_string(item) for item in vals]  # type: ignore[union-attr]
+            )
+
+        return self._response.error(f"unknown command '{command}'", kind="ERR")

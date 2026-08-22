@@ -203,3 +203,103 @@ class TestDel:
         assert db.get("k2") is None
         assert db.get("k3") == "v3"
 
+
+class TestListCommands:
+    def test_lpush_and_lrange(self, handler):
+        res = handler.handle("LPUSH", ["mylist", "world"])
+        assert res == b":1\r\n"
+        res = handler.handle("LPUSH", ["mylist", "hello"])
+        assert res == b":2\r\n"
+
+        # LRANGE
+        res = handler.handle("LRANGE", ["mylist", "0", "-1"])
+        assert res == b"*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n"
+
+    def test_rpush_and_lrange(self, handler):
+        res = handler.handle("RPUSH", ["mylist", "a", "b", "c"])
+        assert res == b":3\r\n"
+        res = handler.handle("LRANGE", ["mylist", "0", "1"])
+        assert res == b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+
+    def test_llen(self, handler):
+        res = handler.handle("LLEN", ["mylist"])
+        assert res == b":0\r\n"
+        handler.handle("RPUSH", ["mylist", "x", "y"])
+        res = handler.handle("LLEN", ["mylist"])
+        assert res == b":2\r\n"
+
+    def test_lpop_single_and_with_count(self, handler):
+        handler.handle("RPUSH", ["mylist", "one", "two", "three", "four"])
+
+        # Single pop
+        res = handler.handle("LPOP", ["mylist"])
+        assert res == b"$3\r\none\r\n"
+
+        # Pop with count
+        res = handler.handle("LPOP", ["mylist", "2"])
+        assert res == b"*2\r\n$3\r\ntwo\r\n$5\r\nthree\r\n"
+
+        # Pop remaining
+        res = handler.handle("LPOP", ["mylist"])
+        assert res == b"$4\r\nfour\r\n"
+
+        # Pop from empty / missing list
+        res = handler.handle("LPOP", ["mylist"])
+        assert res == b"$-1\r\n"
+        res = handler.handle("LPOP", ["mylist", "2"])
+        assert res == b"$-1\r\n"
+
+    def test_rpop_single_and_with_count(self, handler):
+        handler.handle("RPUSH", ["mylist", "one", "two", "three", "four"])
+
+        # Single pop
+        res = handler.handle("RPOP", ["mylist"])
+        assert res == b"$4\r\nfour\r\n"
+
+        # Pop with count
+        res = handler.handle("RPOP", ["mylist", "2"])
+        assert res == b"*2\r\n$5\r\nthree\r\n$3\r\ntwo\r\n"
+
+        # Pop remaining
+        res = handler.handle("RPOP", ["mylist"])
+        assert res == b"$3\r\none\r\n"
+
+        # Pop from empty / missing list
+        res = handler.handle("RPOP", ["mylist"])
+        assert res == b"$-1\r\n"
+        res = handler.handle("RPOP", ["mylist", "2"])
+        assert res == b"$-1\r\n"
+
+    def test_list_commands_syntax_errors(self, handler):
+        assert handler.handle("LPUSH", ["onlykey"]).startswith(b"-ERR")
+        assert handler.handle("RPUSH", ["onlykey"]).startswith(b"-ERR")
+        assert handler.handle("LLEN", []).startswith(b"-ERR")
+        assert handler.handle("LRANGE", ["k", "0"]).startswith(b"-ERR")
+        assert handler.handle("LRANGE", ["k", "bad", "0"]).startswith(b"-ERR")
+        assert handler.handle("LPOP", ["k", "bad"]).startswith(b"-ERR")
+        assert handler.handle("LPOP", ["k", "-1"]).startswith(b"-ERR")
+        assert handler.handle("RPOP", ["k", "bad"]).startswith(b"-ERR")
+        assert handler.handle("RPOP", ["k", "-1"]).startswith(b"-ERR")
+
+
+class TestWrongTypeCommands:
+    def test_wrongtype_set_on_list(self, handler):
+        handler.handle("RPUSH", ["mylist", "a"])
+        res = handler.handle("SET", ["mylist", "val"])
+        assert res.startswith(b"-WRONGTYPE")
+
+    def test_wrongtype_get_on_list(self, handler):
+        handler.handle("RPUSH", ["mylist", "a"])
+        res = handler.handle("GET", ["mylist"])
+        assert res.startswith(b"-WRONGTYPE")
+
+    def test_wrongtype_list_ops_on_string(self, handler):
+        handler.handle("SET", ["mystr", "hello"])
+        assert handler.handle("LPUSH", ["mystr", "a"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("RPUSH", ["mystr", "a"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("LRANGE", ["mystr", "0", "-1"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("LLEN", ["mystr"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("LPOP", ["mystr"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("RPOP", ["mystr"]).startswith(b"-WRONGTYPE")
+
+

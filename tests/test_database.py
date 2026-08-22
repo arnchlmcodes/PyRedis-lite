@@ -335,3 +335,144 @@ class TestDatabaseDEL:
 
             mock_time.time.return_value = 1002.0
             assert self.db.delete("k") == 0
+
+
+# ------------------------------------------------------------------
+# List Operations & WRONGTYPE tests
+# ------------------------------------------------------------------
+from redis_clone.database import WrongTypeError
+
+
+class TestDatabaseLists:
+    def setup_method(self):
+        self.db = Database()
+
+    # -- LPUSH / RPUSH ---------------------------------------------
+
+    def test_lpush_single_and_multiple(self):
+        assert self.db.lpush("mylist", "world") == 1
+        assert self.db.lpush("mylist", "hello") == 2
+        # Head-pushing multiple values at once: values pushed one by one to head
+        assert self.db.lpush("mylist", "a", "b") == 4
+        # Order should be ["b", "a", "hello", "world"]
+        assert self.db.lrange("mylist", 0, -1) == ["b", "a", "hello", "world"]
+
+    def test_rpush_single_and_multiple(self):
+        assert self.db.rpush("mylist", "hello") == 1
+        assert self.db.rpush("mylist", "world") == 2
+        assert self.db.rpush("mylist", "foo", "bar") == 4
+        assert self.db.lrange("mylist", 0, -1) == ["hello", "world", "foo", "bar"]
+
+    # -- LRANGE ----------------------------------------------------
+
+    def test_lrange_positive_indices(self):
+        self.db.rpush("mylist", "a", "b", "c", "d")
+        assert self.db.lrange("mylist", 0, 0) == ["a"]
+        assert self.db.lrange("mylist", 0, 1) == ["a", "b"]
+        assert self.db.lrange("mylist", 1, 2) == ["b", "c"]
+        assert self.db.lrange("mylist", 0, 3) == ["a", "b", "c", "d"]
+
+    def test_lrange_negative_indices(self):
+        self.db.rpush("mylist", "one", "two", "three", "four", "five")
+        assert self.db.lrange("mylist", 0, -1) == ["one", "two", "three", "four", "five"]
+        assert self.db.lrange("mylist", -3, -1) == ["three", "four", "five"]
+        assert self.db.lrange("mylist", -2, -1) == ["four", "five"]
+        assert self.db.lrange("mylist", -100, 100) == ["one", "two", "three", "four", "five"]
+
+    def test_lrange_out_of_bounds_and_inverted(self):
+        self.db.rpush("mylist", "a", "b", "c")
+        assert self.db.lrange("mylist", 5, 10) == []
+        assert self.db.lrange("mylist", 2, 1) == []
+        assert self.db.lrange("mylist", -1, -2) == []
+
+    def test_lrange_nonexistent_key_returns_empty_list(self):
+        assert self.db.lrange("nonexistent", 0, -1) == []
+
+    # -- LLEN ------------------------------------------------------
+
+    def test_llen_existing_and_nonexistent(self):
+        assert self.db.llen("missing") == 0
+        self.db.rpush("mylist", "a", "b", "c")
+        assert self.db.llen("mylist") == 3
+
+    # -- LPOP / RPOP -----------------------------------------------
+
+    def test_lpop_single(self):
+        self.db.rpush("mylist", "a", "b", "c")
+        assert self.db.lpop("mylist") == "a"
+        assert self.db.lpop("mylist") == "b"
+        assert self.db.lpop("mylist") == "c"
+        assert self.db.lpop("mylist") is None
+        # Once empty, key is removed
+        assert not self.db.exists("mylist")
+
+    def test_rpop_single(self):
+        self.db.rpush("mylist", "a", "b", "c")
+        assert self.db.rpop("mylist") == "c"
+        assert self.db.rpop("mylist") == "b"
+        assert self.db.rpop("mylist") == "a"
+        assert self.db.rpop("mylist") is None
+        assert not self.db.exists("mylist")
+
+    def test_lpop_with_count(self):
+        self.db.rpush("mylist", "a", "b", "c", "d")
+        assert self.db.lpop("mylist", count=2) == ["a", "b"]
+        assert self.db.lrange("mylist", 0, -1) == ["c", "d"]
+        assert self.db.lpop("mylist", count=10) == ["c", "d"]
+        assert self.db.lpop("mylist", count=2) is None
+
+    def test_rpop_with_count(self):
+        self.db.rpush("mylist", "a", "b", "c", "d")
+        assert self.db.rpop("mylist", count=2) == ["d", "c"]
+        assert self.db.lrange("mylist", 0, -1) == ["a", "b"]
+        assert self.db.rpop("mylist", count=10) == ["b", "a"]
+        assert self.db.rpop("mylist", count=2) is None
+
+    # -- DEL and Expiry on Lists -----------------------------------
+
+    def test_del_on_list(self):
+        self.db.rpush("mylist", "a", "b")
+        assert self.db.delete("mylist") == 1
+        assert not self.db.exists("mylist")
+        assert self.db.llen("mylist") == 0
+
+    def test_list_lazy_expiry(self):
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            self.db.rpush("mylist", "a")
+            self.db._expiry["mylist"] = 1005.0
+
+            mock_time.time.return_value = 1004.0
+            assert self.db.llen("mylist") == 1
+
+            mock_time.time.return_value = 1006.0
+            assert self.db.llen("mylist") == 0
+            assert not self.db.exists("mylist")
+
+
+class TestDatabaseWrongType:
+    def setup_method(self):
+        self.db = Database()
+
+    def test_string_op_on_list_raises_wrongtype(self):
+        self.db.rpush("mylist", "a", "b")
+        with pytest.raises(WrongTypeError):
+            self.db.set("mylist", "val")
+        with pytest.raises(WrongTypeError):
+            self.db.get("mylist")
+
+    def test_list_op_on_string_raises_wrongtype(self):
+        self.db.set("mystring", "hello")
+        with pytest.raises(WrongTypeError):
+            self.db.lpush("mystring", "a")
+        with pytest.raises(WrongTypeError):
+            self.db.rpush("mystring", "a")
+        with pytest.raises(WrongTypeError):
+            self.db.lrange("mystring", 0, -1)
+        with pytest.raises(WrongTypeError):
+            self.db.llen("mystring")
+        with pytest.raises(WrongTypeError):
+            self.db.lpop("mystring")
+        with pytest.raises(WrongTypeError):
+            self.db.rpop("mystring")
+

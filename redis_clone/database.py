@@ -9,11 +9,16 @@ from __future__ import annotations
 import time
 
 
+class WrongTypeError(Exception):
+    """Raised when an operation is attempted against a key holding a different data type."""
+
+
 class Database:
-    """Simple in-memory string → string store with optional TTL support."""
+    """In-memory key-value store with string, list, and TTL support."""
 
     def __init__(self) -> None:
         self._store: dict[str, str] = {}
+        self._list_store: dict[str, list[str]] = {}
         self._expiry: dict[str, float] = {}  # key → absolute epoch (seconds)
 
     # ------------------------------------------------------------------
@@ -28,18 +33,19 @@ class Database:
         return time.time() > exp
 
     def _evict_if_expired(self, key: str) -> bool:
-        """Remove *key* from both stores if it has expired.
+        """Remove *key* from stores if it has expired.
 
         Returns ``True`` if the key was evicted.
         """
         if self._is_expired(key):
             self._store.pop(key, None)
+            self._list_store.pop(key, None)
             self._expiry.pop(key, None)
             return True
         return False
 
     # ------------------------------------------------------------------
-    # Public API
+    # String Operations
     # ------------------------------------------------------------------
 
     # Sentinel used to distinguish "SET was rejected by NX/XX" from
@@ -82,9 +88,12 @@ class Database:
           the ``Database._NOT_SET`` sentinel.
         * Otherwise: ``None`` (success, no GET).
         """
-        # Lazy-evict before evaluating conditions so that an expired key
-        # is treated as non-existent.
         self._evict_if_expired(key)
+
+        if key in self._list_store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
 
         key_exists = key in self._store
         old_value: str | None = self._store.get(key)
@@ -108,20 +117,15 @@ class Database:
         elif pxat is not None:
             new_expiry = pxat / 1000.0
 
-        # Capture the old expiry *before* overwriting the value, so that
-        # KEEPTTL can re-apply it.
         old_expiry = self._expiry.get(key)
 
         self._store[key] = value
 
         if new_expiry is not None:
-            # Explicit TTL option supplied → use it.
             self._expiry[key] = new_expiry
         elif keepttl and old_expiry is not None:
-            # KEEPTTL: preserve whatever TTL the key already had.
             self._expiry[key] = old_expiry
         else:
-            # No TTL option and no KEEPTTL → clear any previous TTL.
             self._expiry.pop(key, None)
 
         return old_value if get else None
@@ -132,12 +136,178 @@ class Database:
         """
         if self._evict_if_expired(key):
             return None
+        if key in self._list_store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
         return self._store.get(key)
+
+    # ------------------------------------------------------------------
+    # List Operations
+    # ------------------------------------------------------------------
+
+    def lpush(self, key: str, *values: str) -> int:
+        """Insert elements at the head of the list stored at *key*.
+
+        Creates the list if it doesn't exist.
+        Returns the length of the list after the push operation.
+        """
+        self._evict_if_expired(key)
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+        if not values:
+            return len(self._list_store.get(key, []))
+
+        lst = self._list_store.setdefault(key, [])
+        for val in values:
+            lst.insert(0, val)
+        return len(lst)
+
+    def rpush(self, key: str, *values: str) -> int:
+        """Append elements to the tail of the list stored at *key*.
+
+        Creates the list if it doesn't exist.
+        Returns the length of the list after the push operation.
+        """
+        self._evict_if_expired(key)
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+        if not values:
+            return len(self._list_store.get(key, []))
+
+        lst = self._list_store.setdefault(key, [])
+        lst.extend(values)
+        return len(lst)
+
+    def lrange(self, key: str, start: int, stop: int) -> list[str]:
+        """Return a slice of elements from the list at *key* between *start* and *stop* (inclusive).
+
+        Supports negative offsets (e.g. -1 for last element).
+        """
+        self._evict_if_expired(key)
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+        if key not in self._list_store:
+            return []
+
+        lst = self._list_store[key]
+        n = len(lst)
+        if n == 0:
+            return []
+
+        # Normalize negative indices
+        if start < 0:
+            start = n + start
+        if stop < 0:
+            stop = n + stop
+
+        # Clamp boundaries
+        if start < 0:
+            start = 0
+        if stop >= n:
+            stop = n - 1
+
+        if start > stop or start >= n:
+            return []
+
+        return list(lst[start : stop + 1])
+
+    def llen(self, key: str) -> int:
+        """Return the length of the list stored at *key*."""
+        self._evict_if_expired(key)
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+        return len(self._list_store.get(key, []))
+
+    def lpop(self, key: str, count: int | None = None) -> list[str] | str | None:
+        """Remove and return elements from the head of the list at *key*.
+
+        If count is None, returns a single string or None.
+        If count is provided, returns a list of strings (or None if key absent).
+        """
+        self._evict_if_expired(key)
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+        if key not in self._list_store:
+            return None
+
+        lst = self._list_store[key]
+        if count is None:
+            if not lst:
+                self._list_store.pop(key, None)
+                self._expiry.pop(key, None)
+                return None
+            val = lst.pop(0)
+            if not lst:
+                self._list_store.pop(key, None)
+                self._expiry.pop(key, None)
+            return val
+
+        # count is specified
+        popped: list[str] = []
+        for _ in range(count):
+            if not lst:
+                break
+            popped.append(lst.pop(0))
+        if not lst:
+            self._list_store.pop(key, None)
+            self._expiry.pop(key, None)
+        return popped
+
+    def rpop(self, key: str, count: int | None = None) -> list[str] | str | None:
+        """Remove and return elements from the tail of the list at *key*.
+
+        If count is None, returns a single string or None.
+        If count is provided, returns a list of strings (or None if key absent).
+        """
+        self._evict_if_expired(key)
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+        if key not in self._list_store:
+            return None
+
+        lst = self._list_store[key]
+        if count is None:
+            if not lst:
+                self._list_store.pop(key, None)
+                self._expiry.pop(key, None)
+                return None
+            val = lst.pop()
+            if not lst:
+                self._list_store.pop(key, None)
+                self._expiry.pop(key, None)
+            return val
+
+        popped: list[str] = []
+        for _ in range(count):
+            if not lst:
+                break
+            popped.append(lst.pop())
+        if not lst:
+            self._list_store.pop(key, None)
+            self._expiry.pop(key, None)
+        return popped
+
+    # ------------------------------------------------------------------
+    # Generic Key Operations
+    # ------------------------------------------------------------------
 
     def exists(self, key: str) -> bool:
         """Return ``True`` if *key* exists and has not expired."""
         self._evict_if_expired(key)
-        return key in self._store
+        return (key in self._store) or (key in self._list_store)
 
     def delete(self, *keys: str) -> int:
         """Remove *keys* from the store. Return the number of keys that
@@ -145,10 +315,15 @@ class Database:
         """
         count = 0
         for key in keys:
-            # Don't count already-expired keys as "deleted".
             self._evict_if_expired(key)
+            removed = False
             if key in self._store:
                 del self._store[key]
+                removed = True
+            if key in self._list_store:
+                del self._list_store[key]
+                removed = True
+            if removed:
                 self._expiry.pop(key, None)
                 count += 1
         return count

@@ -13,6 +13,12 @@ class ResponseBuilder:
        
         return f"-{kind} {message}{CRLF}".encode("utf-8")
 
+    def wrong_type(
+        self,
+        message: str = "Operation against a key holding the wrong kind of value",
+    ) -> bytes:
+        return self.error(message, kind="WRONGTYPE")
+
 
 
     def integer(self, value: int) -> bytes:

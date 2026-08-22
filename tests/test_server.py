@@ -99,3 +99,30 @@ def test_server_del(client):
     assert client.get("d1") is None
     assert client.get("d2") is None
 
+
+def test_server_lists(client):
+    # LPUSH / RPUSH / LLEN / LRANGE
+    assert client.lpush("server_list", "world") == 1
+    assert client.lpush("server_list", "hello") == 2
+    assert client.rpush("server_list", "foo", "bar") == 4
+    assert client.llen("server_list") == 4
+    assert client.lrange("server_list", 0, -1) == ["hello", "world", "foo", "bar"]
+    assert client.lrange("server_list", -2, -1) == ["foo", "bar"]
+
+    # LPOP / RPOP
+    assert client.lpop("server_list") == "hello"
+    assert client.rpop("server_list") == "bar"
+    assert client.lpop("server_list", count=2) == ["world", "foo"]
+    assert client.lpop("server_list") is None
+
+
+def test_server_wrongtype(client):
+    client.set("str_key", "string_val")
+    with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        client.lpush("str_key", "item")
+
+    client.rpush("list_key", "item")
+    with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        client.set("list_key", "new_val")
+
+
