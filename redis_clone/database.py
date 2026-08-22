@@ -44,8 +44,20 @@ class Database:
             return True
         return False
 
+    def _check_type_for_string(self, key: str) -> None:
+        if key in self._list_store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+
+    def _check_type_for_list(self, key: str) -> None:
+        if key in self._store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+
     # ------------------------------------------------------------------
-    # String Operations
+    # Public API - String Operations
     # ------------------------------------------------------------------
 
     # Sentinel used to distinguish "SET was rejected by NX/XX" from
@@ -88,12 +100,10 @@ class Database:
           the ``Database._NOT_SET`` sentinel.
         * Otherwise: ``None`` (success, no GET).
         """
+        # Lazy-evict before evaluating conditions so that an expired key
+        # is treated as non-existent.
         self._evict_if_expired(key)
-
-        if key in self._list_store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_string(key)
 
         key_exists = key in self._store
         old_value: str | None = self._store.get(key)
@@ -117,15 +127,20 @@ class Database:
         elif pxat is not None:
             new_expiry = pxat / 1000.0
 
+        # Capture the old expiry *before* overwriting the value, so that
+        # KEEPTTL can re-apply it.
         old_expiry = self._expiry.get(key)
 
         self._store[key] = value
 
         if new_expiry is not None:
+            # Explicit TTL option supplied → use it.
             self._expiry[key] = new_expiry
         elif keepttl and old_expiry is not None:
+            # KEEPTTL: preserve whatever TTL the key already had.
             self._expiry[key] = old_expiry
         else:
+            # No TTL option and no KEEPTTL → clear any previous TTL.
             self._expiry.pop(key, None)
 
         return old_value if get else None
@@ -136,10 +151,7 @@ class Database:
         """
         if self._evict_if_expired(key):
             return None
-        if key in self._list_store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_string(key)
         return self._store.get(key)
 
     # ------------------------------------------------------------------
@@ -153,10 +165,7 @@ class Database:
         Returns the length of the list after the push operation.
         """
         self._evict_if_expired(key)
-        if key in self._store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_list(key)
         if not values:
             return len(self._list_store.get(key, []))
 
@@ -172,10 +181,7 @@ class Database:
         Returns the length of the list after the push operation.
         """
         self._evict_if_expired(key)
-        if key in self._store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_list(key)
         if not values:
             return len(self._list_store.get(key, []))
 
@@ -189,10 +195,7 @@ class Database:
         Supports negative offsets (e.g. -1 for last element).
         """
         self._evict_if_expired(key)
-        if key in self._store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_list(key)
         if key not in self._list_store:
             return []
 
@@ -221,10 +224,7 @@ class Database:
     def llen(self, key: str) -> int:
         """Return the length of the list stored at *key*."""
         self._evict_if_expired(key)
-        if key in self._store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_list(key)
         return len(self._list_store.get(key, []))
 
     def lpop(self, key: str, count: int | None = None) -> list[str] | str | None:
@@ -234,10 +234,7 @@ class Database:
         If count is provided, returns a list of strings (or None if key absent).
         """
         self._evict_if_expired(key)
-        if key in self._store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_list(key)
         if key not in self._list_store:
             return None
 
@@ -271,10 +268,7 @@ class Database:
         If count is provided, returns a list of strings (or None if key absent).
         """
         self._evict_if_expired(key)
-        if key in self._store:
-            raise WrongTypeError(
-                "Operation against a key holding the wrong kind of value"
-            )
+        self._check_type_for_list(key)
         if key not in self._list_store:
             return None
 
@@ -315,6 +309,7 @@ class Database:
         """
         count = 0
         for key in keys:
+            # Don't count already-expired keys as "deleted".
             self._evict_if_expired(key)
             removed = False
             if key in self._store:
