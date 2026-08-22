@@ -25,7 +25,7 @@ class CommandHandler:
         """
         Dispatch *command* with *args* and return a RESP-encoded response.
 
-        Supported commands: PING, ECHO, SET, GET, DEL, LPUSH, RPUSH, LRANGE, LLEN, LPOP, RPOP.
+        Supported commands: PING, ECHO, SET, GET, DEL, LPUSH, RPUSH, LRANGE, LLEN, LPOP, RPOP, HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN.
         Unknown commands produce an ERR error response.
         """
         logger.debug("Command=%r args=%r", command, args)
@@ -207,4 +207,55 @@ class CommandHandler:
                 [self._response.bulk_string(item) for item in vals]  # type: ignore[union-attr]
             )
 
+        if command == "HSET":
+            if len(args) < 3 or (len(args) - 1) % 2 != 0:
+                return self._response.error(
+                    "wrong number of arguments for 'hset' command", kind="ERR"
+                )
+            count = self._db.hset(args[0], *args[1:])
+            return self._response.integer(count)
+
+        if command == "HGET":
+            if len(args) != 2:
+                return self._response.error(
+                    "wrong number of arguments for 'hget' command", kind="ERR"
+                )
+            val = self._db.hget(args[0], args[1])
+            return self._response.bulk_string(val)
+
+        if command == "HGETALL":
+            if len(args) != 1:
+                return self._response.error(
+                    "wrong number of arguments for 'hgetall' command", kind="ERR"
+                )
+            items = self._db.hgetall(args[0])
+            return self._response.array(
+                [self._response.bulk_string(item) for item in items]
+            )
+
+        if command == "HDEL":
+            if len(args) < 2:
+                return self._response.error(
+                    "wrong number of arguments for 'hdel' command", kind="ERR"
+                )
+            count = self._db.hdel(args[0], *args[1:])
+            return self._response.integer(count)
+
+        if command == "HEXISTS":
+            if len(args) != 2:
+                return self._response.error(
+                    "wrong number of arguments for 'hexists' command", kind="ERR"
+                )
+            exists = self._db.hexists(args[0], args[1])
+            return self._response.integer(1 if exists else 0)
+
+        if command == "HLEN":
+            if len(args) != 1:
+                return self._response.error(
+                    "wrong number of arguments for 'hlen' command", kind="ERR"
+                )
+            length = self._db.hlen(args[0])
+            return self._response.integer(length)
+
         return self._response.error(f"unknown command '{command}'", kind="ERR")
+

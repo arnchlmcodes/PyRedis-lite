@@ -14,11 +14,12 @@ class WrongTypeError(Exception):
 
 
 class Database:
-    """In-memory key-value store with string, list, and TTL support."""
+    """In-memory key-value store with string, list, hash, and TTL support."""
 
     def __init__(self) -> None:
         self._store: dict[str, str] = {}
         self._list_store: dict[str, list[str]] = {}
+        self._hash_store: dict[str, dict[str, str]] = {}
         self._expiry: dict[str, float] = {}  # key → absolute epoch (seconds)
 
     # ------------------------------------------------------------------
@@ -40,18 +41,25 @@ class Database:
         if self._is_expired(key):
             self._store.pop(key, None)
             self._list_store.pop(key, None)
+            self._hash_store.pop(key, None)
             self._expiry.pop(key, None)
             return True
         return False
 
     def _check_type_for_string(self, key: str) -> None:
-        if key in self._list_store:
+        if key in self._list_store or key in self._hash_store:
             raise WrongTypeError(
                 "Operation against a key holding the wrong kind of value"
             )
 
     def _check_type_for_list(self, key: str) -> None:
-        if key in self._store:
+        if key in self._store or key in self._hash_store:
+            raise WrongTypeError(
+                "Operation against a key holding the wrong kind of value"
+            )
+
+    def _check_type_for_hash(self, key: str) -> None:
+        if key in self._store or key in self._list_store:
             raise WrongTypeError(
                 "Operation against a key holding the wrong kind of value"
             )
@@ -295,13 +303,107 @@ class Database:
         return popped
 
     # ------------------------------------------------------------------
+    # Hash Operations
+    # ------------------------------------------------------------------
+
+    def hset(self, key: str, *field_values: str) -> int:
+        """Set field-value pairs in the hash stored at *key*.
+
+        Creates the hash if it does not exist.
+        Returns the number of fields that were newly added (not updated).
+        """
+        self._evict_if_expired(key)
+        self._check_type_for_hash(key)
+        if len(field_values) % 2 != 0:
+            raise ValueError("wrong number of arguments for hset")
+
+        h = self._hash_store.setdefault(key, {})
+        added = 0
+        for i in range(0, len(field_values), 2):
+            field = field_values[i]
+            value = field_values[i + 1]
+            if field not in h:
+                added += 1
+            h[field] = value
+        return added
+
+    def hget(self, key: str, field: str) -> str | None:
+        """Return the value associated with *field* in the hash stored at *key*,
+        or ``None`` if the key or field does not exist.
+        """
+        if self._evict_if_expired(key):
+            return None
+        self._check_type_for_hash(key)
+        if key not in self._hash_store:
+            return None
+        return self._hash_store[key].get(field)
+
+    def hgetall(self, key: str) -> list[str]:
+        """Return all fields and values of the hash stored at *key* as a flat list
+        ``[field1, val1, field2, val2, ...]``, or an empty list if *key* does not exist.
+        """
+        if self._evict_if_expired(key):
+            return []
+        self._check_type_for_hash(key)
+        if key not in self._hash_store:
+            return []
+        h = self._hash_store[key]
+        res: list[str] = []
+        for f, v in h.items():
+            res.extend([f, v])
+        return res
+
+    def hdel(self, key: str, *fields: str) -> int:
+        """Remove *fields* from the hash at *key*.
+
+        Returns the number of fields actually removed.
+        Deletes the key if the hash becomes empty.
+        """
+        self._evict_if_expired(key)
+        self._check_type_for_hash(key)
+        if key not in self._hash_store:
+            return 0
+        h = self._hash_store[key]
+        count = 0
+        for f in fields:
+            if f in h:
+                del h[f]
+                count += 1
+        if not h:
+            self._hash_store.pop(key, None)
+            self._expiry.pop(key, None)
+        return count
+
+    def hexists(self, key: str, field: str) -> bool:
+        """Return ``True`` if *field* exists in the hash stored at *key*."""
+        if self._evict_if_expired(key):
+            return False
+        self._check_type_for_hash(key)
+        if key not in self._hash_store:
+            return False
+        return field in self._hash_store[key]
+
+    def hlen(self, key: str) -> int:
+        """Return the number of fields contained in the hash stored at *key*."""
+        if self._evict_if_expired(key):
+            return 0
+        self._check_type_for_hash(key)
+        if key not in self._hash_store:
+            return 0
+        return len(self._hash_store[key])
+
+    # ------------------------------------------------------------------
     # Generic Key Operations
     # ------------------------------------------------------------------
 
     def exists(self, key: str) -> bool:
         """Return ``True`` if *key* exists and has not expired."""
         self._evict_if_expired(key)
-        return (key in self._store) or (key in self._list_store)
+        return (
+            (key in self._store)
+            or (key in self._list_store)
+            or (key in self._hash_store)
+        )
 
     def delete(self, *keys: str) -> int:
         """Remove *keys* from the store. Return the number of keys that
@@ -317,6 +419,9 @@ class Database:
                 removed = True
             if key in self._list_store:
                 del self._list_store[key]
+                removed = True
+            if key in self._hash_store:
+                del self._hash_store[key]
                 removed = True
             if removed:
                 self._expiry.pop(key, None)

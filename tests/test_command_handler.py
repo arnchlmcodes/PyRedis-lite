@@ -239,4 +239,71 @@ class TestWrongTypeHandling:
         assert handler.handle("LPOP", ["mystr"]).startswith(b"-WRONGTYPE")
         assert handler.handle("RPOP", ["mystr"]).startswith(b"-WRONGTYPE")
 
+    def test_wrongtype_hash_ops_on_string_and_list(self, handler):
+        handler.handle("SET", ["mystr", "hello"])
+        assert handler.handle("HSET", ["mystr", "f", "v"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HGET", ["mystr", "f"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HGETALL", ["mystr"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HDEL", ["mystr", "f"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HEXISTS", ["mystr", "f"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HLEN", ["mystr"]).startswith(b"-WRONGTYPE")
+
+        handler.handle("RPUSH", ["mylist", "item"])
+        assert handler.handle("HSET", ["mylist", "f", "v"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HGET", ["mylist", "f"]).startswith(b"-WRONGTYPE")
+        assert handler.handle("HGETALL", ["mylist"]).startswith(b"-WRONGTYPE")
+
+
+class TestHashCommands:
+    def test_hset_single_and_multi_field(self, handler):
+        assert handler.handle("HSET", ["myhash", "f1", "v1"]) == b":1\r\n"
+        assert handler.handle("HSET", ["myhash", "f1", "v1"]) == b":0\r\n"
+        assert handler.handle("HSET", ["myhash", "f2", "v2", "f3", "v3"]) == b":2\r\n"
+
+    def test_hset_syntax_errors(self, handler):
+        assert handler.handle("HSET", []).startswith(b"-ERR")
+        assert handler.handle("HSET", ["myhash"]).startswith(b"-ERR")
+        assert handler.handle("HSET", ["myhash", "f1"]).startswith(b"-ERR")
+        assert handler.handle("HSET", ["myhash", "f1", "v1", "f2"]).startswith(b"-ERR")
+
+    def test_hget(self, handler):
+        handler.handle("HSET", ["myhash", "f1", "hello"])
+        assert handler.handle("HGET", ["myhash", "f1"]) == b"$5\r\nhello\r\n"
+        assert handler.handle("HGET", ["myhash", "f2"]) == b"$-1\r\n"
+        assert handler.handle("HGET", ["missing", "f1"]) == b"$-1\r\n"
+
+    def test_hgetall(self, handler):
+        assert handler.handle("HGETALL", ["missing"]) == b"*0\r\n"
+        handler.handle("HSET", ["user", "name", "alice", "age", "25"])
+        res = handler.handle("HGETALL", ["user"])
+        assert res == b"*4\r\n$4\r\nname\r\n$5\r\nalice\r\n$3\r\nage\r\n$2\r\n25\r\n"
+
+    def test_hdel(self, handler):
+        handler.handle("HSET", ["myhash", "f1", "v1", "f2", "v2"])
+        assert handler.handle("HDEL", ["myhash", "f1", "f3"]) == b":1\r\n"
+        assert handler.handle("HGET", ["myhash", "f1"]) == b"$-1\r\n"
+        assert handler.handle("HDEL", ["myhash", "f2"]) == b":1\r\n"
+        # Deleting all fields cleans up the hash
+        assert handler.handle("HDEL", ["myhash", "f2"]) == b":0\r\n"
+
+    def test_hexists(self, handler):
+        handler.handle("HSET", ["myhash", "f1", "v1"])
+        assert handler.handle("HEXISTS", ["myhash", "f1"]) == b":1\r\n"
+        assert handler.handle("HEXISTS", ["myhash", "f2"]) == b":0\r\n"
+        assert handler.handle("HEXISTS", ["missing", "f1"]) == b":0\r\n"
+
+    def test_hlen(self, handler):
+        assert handler.handle("HLEN", ["missing"]) == b":0\r\n"
+        handler.handle("HSET", ["myhash", "f1", "v1", "f2", "v2"])
+        assert handler.handle("HLEN", ["myhash"]) == b":2\r\n"
+
+    def test_hash_syntax_errors(self, handler):
+        assert handler.handle("HGET", ["k"]).startswith(b"-ERR")
+        assert handler.handle("HGETALL", []).startswith(b"-ERR")
+        assert handler.handle("HGETALL", ["k", "extra"]).startswith(b"-ERR")
+        assert handler.handle("HDEL", ["k"]).startswith(b"-ERR")
+        assert handler.handle("HEXISTS", ["k"]).startswith(b"-ERR")
+        assert handler.handle("HLEN", []).startswith(b"-ERR")
+
+
 

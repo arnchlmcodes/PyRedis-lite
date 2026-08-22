@@ -123,9 +123,43 @@ def test_server_wrongtype(client):
     client.set("str_key", "string_val")
     with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
         client.lpush("str_key", "item")
+    with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        client.hset("str_key", "f", "v")
 
     client.rpush("list_key", "item")
     with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
         client.get("list_key")
+    with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        client.hset("list_key", "f", "v")
+
+    client.hset("h_key", "f", "v")
+    with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        client.get("h_key")
+    with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
+        client.lpush("h_key", "item")
+
+
+def test_server_hashes(client):
+    # HSET single & multi-field (via mapping)
+    assert client.hset("server_hash", "name", "alice") == 1
+    assert client.hset("server_hash", "name", "alice") == 0
+    assert client.hset("server_hash", mapping={"age": "30", "city": "NYC"}) == 2
+
+    # HGET & HEXISTS & HLEN
+    assert client.hget("server_hash", "name") == "alice"
+    assert client.hget("server_hash", "nonexistent") is None
+    assert client.hexists("server_hash", "age") is True
+    assert client.hexists("server_hash", "nonexistent") is False
+    assert client.hlen("server_hash") == 3
+
+    # HGETALL
+    all_fields = client.hgetall("server_hash")
+    assert all_fields == {"name": "alice", "age": "30", "city": "NYC"}
+
+    # HDEL
+    assert client.hdel("server_hash", "city", "missing") == 1
+    assert client.hexists("server_hash", "city") is False
+    assert client.hlen("server_hash") == 2
+
 
 

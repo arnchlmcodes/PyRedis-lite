@@ -476,3 +476,136 @@ class TestDatabaseWrongType:
         with pytest.raises(WrongTypeError):
             self.db.rpop("mystring")
 
+    def test_hash_op_on_string_raises_wrongtype(self):
+        self.db.set("mystr", "hello")
+        with pytest.raises(WrongTypeError):
+            self.db.hset("mystr", "f1", "v1")
+        with pytest.raises(WrongTypeError):
+            self.db.hget("mystr", "f1")
+        with pytest.raises(WrongTypeError):
+            self.db.hgetall("mystr")
+        with pytest.raises(WrongTypeError):
+            self.db.hdel("mystr", "f1")
+        with pytest.raises(WrongTypeError):
+            self.db.hexists("mystr", "f1")
+        with pytest.raises(WrongTypeError):
+            self.db.hlen("mystr")
+
+    def test_hash_op_on_list_raises_wrongtype(self):
+        self.db.rpush("mylist", "item")
+        with pytest.raises(WrongTypeError):
+            self.db.hset("mylist", "f1", "v1")
+        with pytest.raises(WrongTypeError):
+            self.db.hget("mylist", "f1")
+        with pytest.raises(WrongTypeError):
+            self.db.hgetall("mylist")
+        with pytest.raises(WrongTypeError):
+            self.db.hdel("mylist", "f1")
+        with pytest.raises(WrongTypeError):
+            self.db.hexists("mylist", "f1")
+        with pytest.raises(WrongTypeError):
+            self.db.hlen("mylist")
+
+    def test_string_and_list_ops_on_hash_raise_wrongtype(self):
+        self.db.hset("myhash", "f1", "v1")
+        with pytest.raises(WrongTypeError):
+            self.db.set("myhash", "strval")
+        with pytest.raises(WrongTypeError):
+            self.db.get("myhash")
+        with pytest.raises(WrongTypeError):
+            self.db.lpush("myhash", "a")
+        with pytest.raises(WrongTypeError):
+            self.db.rpush("myhash", "a")
+        with pytest.raises(WrongTypeError):
+            self.db.lrange("myhash", 0, -1)
+        with pytest.raises(WrongTypeError):
+            self.db.llen("myhash")
+        with pytest.raises(WrongTypeError):
+            self.db.lpop("myhash")
+        with pytest.raises(WrongTypeError):
+            self.db.rpop("myhash")
+
+
+# ------------------------------------------------------------------
+# Hash Operations tests
+# ------------------------------------------------------------------
+
+
+class TestDatabaseHashes:
+    def setup_method(self):
+        self.db = Database()
+
+    def test_hset_single_and_multi_field(self):
+        # Setting a new field returns 1
+        assert self.db.hset("myhash", "f1", "v1") == 1
+        # Updating an existing field returns 0
+        assert self.db.hset("myhash", "f1", "v1_updated") == 0
+        assert self.db.hget("myhash", "f1") == "v1_updated"
+
+        # Multi-field: 1 update, 2 new fields -> returns 2
+        assert self.db.hset("myhash", "f1", "new_v1", "f2", "v2", "f3", "v3") == 2
+        assert self.db.hget("myhash", "f1") == "new_v1"
+        assert self.db.hget("myhash", "f2") == "v2"
+        assert self.db.hget("myhash", "f3") == "v3"
+
+    def test_hset_odd_arguments_raises_value_error(self):
+        with pytest.raises(ValueError):
+            self.db.hset("myhash", "f1")
+
+    def test_hget_missing_key_and_missing_field(self):
+        assert self.db.hget("missing_key", "f1") is None
+        self.db.hset("myhash", "f1", "v1")
+        assert self.db.hget("myhash", "f2") is None
+
+    def test_hgetall(self):
+        assert self.db.hgetall("missing") == []
+        self.db.hset("user:1", "name", "alice", "age", "30")
+        items = self.db.hgetall("user:1")
+        # Items is flat [f1, v1, f2, v2, ...]
+        assert len(items) == 4
+        d = dict(zip(items[0::2], items[1::2]))
+        assert d == {"name": "alice", "age": "30"}
+
+    def test_hdel(self):
+        self.db.hset("myhash", "f1", "v1", "f2", "v2", "f3", "v3")
+        # Delete existing and missing field
+        assert self.db.hdel("myhash", "f1", "f4") == 1
+        assert self.db.hget("myhash", "f1") is None
+        assert self.db.hexists("myhash", "f1") is False
+
+        # Deleting all remaining fields removes the hash key
+        assert self.db.hdel("myhash", "f2", "f3") == 2
+        assert not self.db.exists("myhash")
+        assert self.db.hdel("myhash", "f2") == 0
+
+    def test_hexists(self):
+        assert self.db.hexists("missing", "f1") is False
+        self.db.hset("myhash", "f1", "v1")
+        assert self.db.hexists("myhash", "f1") is True
+        assert self.db.hexists("myhash", "other") is False
+
+    def test_hlen(self):
+        assert self.db.hlen("missing") == 0
+        self.db.hset("myhash", "f1", "v1", "f2", "v2")
+        assert self.db.hlen("myhash") == 2
+
+    def test_del_on_hash(self):
+        self.db.hset("myhash", "f1", "v1", "f2", "v2")
+        assert self.db.delete("myhash") == 1
+        assert not self.db.exists("myhash")
+        assert self.db.hlen("myhash") == 0
+
+    def test_hash_lazy_expiry(self):
+        with patch("redis_clone.database.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            self.db.hset("myhash", "f1", "v1")
+            self.db._expiry["myhash"] = 1005.0
+
+            mock_time.time.return_value = 1004.0
+            assert self.db.hlen("myhash") == 1
+
+            mock_time.time.return_value = 1006.0
+            assert self.db.hlen("myhash") == 0
+            assert not self.db.exists("myhash")
+
+
