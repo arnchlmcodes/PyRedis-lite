@@ -12,6 +12,9 @@ TEST_PORT = int(os.environ.get("REDIS_PORT", 6380))
 
 @pytest.fixture(scope="module")
 def redis_server():
+    if "REDIS_HOST" in os.environ:
+        yield None
+        return
     server = Server(host=TEST_HOST, port=TEST_PORT)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -123,6 +126,6 @@ def test_server_wrongtype(client):
 
     client.rpush("list_key", "item")
     with pytest.raises(redis.exceptions.ResponseError, match="WRONGTYPE"):
-        client.set("list_key", "new_val")
+        client.get("list_key")
 
 
