@@ -1,5 +1,5 @@
 import pytest
-from redis_clone.redis_parser import Parser, Protocol_2_Data_Types
+from redis_clone.redis_parser import Incomplete, Parser, Protocol_2_Data_Types, ProtocolError
 
 
 class TestProtocol2DataTypes:
@@ -45,9 +45,9 @@ class TestParser:
         assert command == "PING"
 
     def test_empty_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(Incomplete):
             self.parser.parse(b"")
 
     def test_non_array_raises(self):
-        with pytest.raises(ValueError, match="Unsupported top-level RESP2 type"):
+        with pytest.raises(ProtocolError, match="Unsupported top-level RESP2 type"):
             self.parser.parse(b"+OK\r\n")

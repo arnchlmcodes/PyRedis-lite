@@ -4,7 +4,7 @@ import os
 
 from redis_clone.command_handler import CommandHandler
 from redis_clone.database import Database
-from redis_clone.redis_parser import Parser
+from redis_clone.redis_parser import Incomplete, Parser, ProtocolError
 from redis_clone.response_builder import ResponseBuilder
 
 logging.basicConfig(
@@ -87,8 +87,13 @@ class Server:
         addr = writer.get_extra_info("peername")
         logger.info("New connection from %s:%d", *addr)
 
+        # Persistent buffer for this connection – survives across read() calls
+        # so fragmented or pipelined commands are handled correctly.
+        buf: bytearray = bytearray()
+
         try:
             while True:
+                # ---- receive new bytes -------------------------------------
                 try:
                     data = await reader.read(BUFFER_SIZE)
                 except ConnectionResetError:
@@ -99,9 +104,37 @@ class Server:
                     logger.info("Connection closed by %s:%d", *addr)
                     break
 
-                logger.debug("Received %d bytes from %s:%d", len(data), *addr)
-                response = self._process_command(data)
-                writer.write(response)
+                buf.extend(data)
+                logger.debug(
+                    "Received %d bytes from %s:%d (buf=%d)",
+                    len(data),
+                    *addr,
+                    len(buf),
+                )
+
+                # ---- drain all complete commands from buf ------------------
+                while buf:
+                    try:
+                        command, args, consumed = self._parser.parse_one(buf, 0)
+                    except Incomplete:
+                        # Not enough bytes yet – wait for the next read().
+                        break
+                    except ProtocolError as exc:
+                        logger.error("Protocol error from %s:%d: %s", *addr, exc)
+                        writer.write(
+                            self._response.error(f"ERR Protocol error: {exc}", kind="ERR")
+                        )
+                        await writer.drain()
+                        # Unrecoverable – discard the buffer and close.
+                        buf.clear()
+                        return
+
+                    # Slice off the bytes we just consumed.
+                    del buf[:consumed]
+
+                    response = self._handler.handle(command, args)
+                    writer.write(response)
+
                 await writer.drain()
         finally:
             writer.close()
@@ -109,16 +142,6 @@ class Server:
                 await writer.wait_closed()
             except Exception:  # noqa: BLE001
                 pass
-
-    def _process_command(self, data: bytes) -> bytes:
-        """Parse raw bytes and delegate to the command handler."""
-        try:
-            command, args = self._parser.parse(data)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Parse error: %s", exc)
-            return self._response.error(f"Parse error: {exc}", kind="ERR")
-
-        return self._handler.handle(command, args)
 
 
 def main() -> None:
